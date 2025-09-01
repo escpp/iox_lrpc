@@ -1,6 +1,6 @@
 # 基于iceoryx的rpc通信系统
 
-# 服务端
+# 客户端
 ```c++
 #include "iox_lrpc/client.h"
 #include "test_lrpc_message.h"
@@ -48,7 +48,7 @@ int main(int argc, char **argv)
 
 ```
 
-# 客户端
+# 服务端
 ```c++
 #include "iox_lrpc/server.h"
 #include "test_lrpc_message.h"
