@@ -1,0 +1,9 @@
+*.o
+*.a
+*.d
+*.so
+*.out
+.*.swp
+build/
+tools/
+makefile
