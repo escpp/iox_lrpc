@@ -15,6 +15,8 @@
 #include <unordered_map>
 #include <mutex>
 
+#include "iceoryx/iox/string.hpp"
+
 namespace iox_lrpc {
 
 template<typename Request, typename Response>
@@ -29,21 +31,104 @@ private:
     using subscriber_type = iox::popo::Subscriber<RequestWrapper>;
     using publisher_type = iox::popo::Publisher<Response>;
 
+    /**
+     * @brief 客户端管理器，用于管理客户端的连接和消息发布
+     */
+    class ClientManager {
+    private:
+        std::unordered_map<uint64_t, std::shared_ptr<publisher_type>> m_client_manager;
+        std::mutex m_clients_mutex;
+
+    public:
+        /**
+         * @brief 向客户端管理器中添加一个客户端
+         * @param client_id 客户端ID
+         * @param publisher 客户端的发布者
+         * @return true 添加成功, false 添加失败
+         */
+        bool add_client(uint64_t client_id, std::shared_ptr<publisher_type> publisher) 
+        {
+            std::lock_guard<std::mutex> lock(m_clients_mutex);
+            m_client_manager[client_id] = publisher;
+            return true;
+        }
+
+        /**
+         * @brief 向客户端管理器中添加一个客户端
+         * @param rq_name 请求名称
+         * @param rs_name 响应名称
+         * @param id 客户端ID
+         * @return std::shared_ptr<publisher_type> 客户端的发布者, nullptr 表示添加失败
+         */
+        std::shared_ptr<publisher_type> add_client(const std::string& rq_name, const std::string &rs_name, uint64_t id) 
+        {
+            std::string id_string = std::to_string(id);
+            auto publisher_service_description = iox::capro::ServiceDescription(
+                iox::capro::IdString_t(iox::TruncateToCapacity, rq_name.c_str()),
+                iox::capro::IdString_t(iox::TruncateToCapacity, rs_name.c_str()),
+                iox::capro::IdString_t(iox::TruncateToCapacity, id_string.c_str())
+            );
+
+            std::shared_ptr<publisher_type> publisher = std::make_shared<publisher_type>(publisher_service_description);
+            if (!publisher) {
+                std::cerr << "Failed to create publisher for client: " << id << std::endl;
+                return nullptr;
+            }
+
+            if (add_client(id, publisher)) {
+                return publisher;
+            }
+
+            return nullptr;
+        }
+
+        /**
+         * @brief 从客户端管理器中移除一个客户端
+         * @param client_id 客户端ID
+         */
+        void remove_client(uint64_t client_id) 
+        {
+            std::lock_guard<std::mutex> lock(m_clients_mutex);
+            m_client_manager.erase(client_id);
+        }
+
+        /**
+         * @brief 获取客户端的发布者
+         * @param client_id 客户端ID
+         * @return std::shared_ptr<publisher_type> 客户端的发布者, nullptr 表示获取失败
+         */
+        std::shared_ptr<publisher_type> get_publisher(uint64_t client_id) 
+        {
+            std::lock_guard<std::mutex> lock(m_clients_mutex);
+            auto it = m_client_manager.find(client_id);
+            if (it != m_client_manager.end()) {
+                return it->second;
+            } 
+            return nullptr;
+        }
+    };
+
     std::shared_ptr<subscriber_type> m_subscriber;
+    std::string m_app_name;
     std::string m_request_name;
     std::string m_response_name;
-    std::unordered_map<uint64_t, std::shared_ptr<publisher_type>> m_clients;
-    std::mutex m_clients_mutex;
+    ClientManager m_client_manager;
 
 public:
-    server()
+    /**
+     * @brief iox_lrpc服务器构造函数，通过模板参数确定唯一应用名，可以接受多个客户端连接
+     */
+    server(void)
     {
-        // Initialize runtime
-        constexpr char APP_NAME[] = "en-lrpc-server";
-        iox::runtime::PoshRuntime::initRuntime(APP_NAME);
-
         m_request_name = typeid(Request).name();
         m_response_name = typeid(Response).name();
+        m_app_name = m_request_name + m_response_name;
+
+        // Initialize runtime
+        iox::runtime::PoshRuntime::initRuntime(
+            iox::RuntimeName_t(iox::TruncateToCapacity, m_app_name.c_str())
+        );
+
 
         // Create subscriber for receiving requests
         auto service_description = iox::capro::ServiceDescription(
@@ -54,6 +139,12 @@ public:
         m_subscriber = std::make_shared<subscriber_type>(service_description);
     }
 
+    /**
+     * @brief 接收请求并处理
+     * @param callback 请求处理回调函数
+     * @param timeout_ms 超时时间，单位毫秒
+     * @return true 处理成功, false 处理失败
+     */
     bool recv(std::function<bool(const Request &, Response&)> callback = nullptr, uint64_t timeout_ms = 1000) 
     {
         if (nullptr == callback) {
@@ -74,26 +165,14 @@ public:
                 auto& request_wrapper = *request_result.value();
                 
                 // Get or create publisher for sending response to specific client
-                std::shared_ptr<publisher_type> publisher;
-                {
-                    std::lock_guard<std::mutex> lock(m_clients_mutex);
-                    auto it = m_clients.find(request_wrapper.client_id);
-                    if (it != m_clients.end()) {
-                        publisher = it->second;
-                    } else {
-                        std::string client_id_str = std::to_string(request_wrapper.client_id);
-                        auto publisher_service_description = iox::capro::ServiceDescription(
-                            iox::capro::IdString_t(iox::TruncateToCapacity, m_request_name.c_str()),
-                            iox::capro::IdString_t(iox::TruncateToCapacity, m_response_name.c_str()),
-                            iox::capro::IdString_t(iox::TruncateToCapacity, client_id_str.c_str())
-                        );
-                        publisher = std::make_shared<publisher_type>(publisher_service_description);
-                        if (!publisher) {
-                            std::cerr << "Failed to create publisher for client: " << client_id_str << std::endl;
-                            return false;
-                        }
-                        m_clients[request_wrapper.client_id] = publisher;
-                    }
+                std::shared_ptr<publisher_type> publisher = m_client_manager.get_publisher(request_wrapper.client_id);
+                if (nullptr == publisher) {
+                    publisher = m_client_manager.add_client(m_request_name, m_response_name, request_wrapper.client_id);
+                }
+
+                if (nullptr == publisher) {
+                    std::cerr << "Failed to get or create publisher for client: " << request_wrapper.client_id << std::endl;
+                    return false;
                 }
 
                 // Loan memory for the response
