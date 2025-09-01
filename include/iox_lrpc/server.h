@@ -1,9 +1,9 @@
-#ifndef EN_LRPC_SERVER_H
-#define EN_LRPC_SERVER_H
+#pragma once
 
 #include "iceoryx/iceoryx_posh/popo/publisher.hpp"
 #include "iceoryx/iceoryx_posh/popo/subscriber.hpp"
 #include "iceoryx/iceoryx_posh/runtime/posh_runtime.hpp"
+#include "iceoryx/iceoryx_posh/capro/service_description.hpp"
 
 #include <string>
 #include <functional>
@@ -12,8 +12,10 @@
 #include <chrono>
 #include <thread>
 #include <iostream>
+#include <unordered_map>
+#include <mutex>
 
-namespace en_lrpc {
+namespace iox_lrpc {
 
 template<typename Request, typename Response>
 class server
@@ -30,6 +32,8 @@ private:
     std::shared_ptr<subscriber_type> m_subscriber;
     std::string m_request_name;
     std::string m_response_name;
+    std::unordered_map<uint64_t, std::shared_ptr<publisher_type>> m_clients;
+    std::mutex m_clients_mutex;
 
 public:
     server()
@@ -42,9 +46,12 @@ public:
         m_response_name = typeid(Response).name();
 
         // Create subscriber for receiving requests
-        m_subscriber = std::make_shared<subscriber_type>(
-            iox::popo::SubscriberOptions{}.withServiceDescription({m_request_name.c_str(), m_response_name.c_str(), m_request_name.c_str()})
+        auto service_description = iox::capro::ServiceDescription(
+            iox::capro::IdString_t(iox::TruncateToCapacity, m_request_name.c_str()),
+            iox::capro::IdString_t(iox::TruncateToCapacity, m_response_name.c_str()),
+            iox::capro::IdString_t(iox::TruncateToCapacity, m_request_name.c_str())
         );
+        m_subscriber = std::make_shared<subscriber_type>(service_description);
     }
 
     bool recv(std::function<bool(const Request &, Response&)> callback = nullptr, uint64_t timeout_ms = 1000) 
@@ -66,15 +73,27 @@ public:
             if (request_result.has_value()) {
                 auto& request_wrapper = *request_result.value();
                 
-                // Create publisher for sending response to specific client
-                std::string client_id = std::to_string(request_wrapper.client_id);
-                auto publisher = std::make_shared<publisher_type>(
-                    iox::popo::PublisherOptions{}.withServiceDescription({m_request_name.c_str(), m_response_name.c_str(), client_id.c_str()})
-                );
-
-                if (!publisher) {
-                    std::cerr << "Failed to create publisher for client: " << client_id << std::endl;
-                    return false;
+                // Get or create publisher for sending response to specific client
+                std::shared_ptr<publisher_type> publisher;
+                {
+                    std::lock_guard<std::mutex> lock(m_clients_mutex);
+                    auto it = m_clients.find(request_wrapper.client_id);
+                    if (it != m_clients.end()) {
+                        publisher = it->second;
+                    } else {
+                        std::string client_id_str = std::to_string(request_wrapper.client_id);
+                        auto publisher_service_description = iox::capro::ServiceDescription(
+                            iox::capro::IdString_t(iox::TruncateToCapacity, m_request_name.c_str()),
+                            iox::capro::IdString_t(iox::TruncateToCapacity, m_response_name.c_str()),
+                            iox::capro::IdString_t(iox::TruncateToCapacity, client_id_str.c_str())
+                        );
+                        publisher = std::make_shared<publisher_type>(publisher_service_description);
+                        if (!publisher) {
+                            std::cerr << "Failed to create publisher for client: " << client_id_str << std::endl;
+                            return false;
+                        }
+                        m_clients[request_wrapper.client_id] = publisher;
+                    }
                 }
 
                 // Loan memory for the response
@@ -98,14 +117,11 @@ public:
             }
             
             // Sleep a bit to avoid busy waiting
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            std::this_thread::sleep_for(std::chrono::microseconds(1));
         }
 
         std::cerr << "Timeout waiting for request" << std::endl;
         return false;
     }
 };
-
-} // namespace en_lrpc
-
-#endif // EN_LRPC_SERVER_H
+} // namespace iox_lrpc

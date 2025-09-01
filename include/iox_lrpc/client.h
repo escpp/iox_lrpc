@@ -1,9 +1,9 @@
-#ifndef EN_LRPC_CLIENT_H
-#define EN_LRPC_CLIENT_H
+#pragma once
 
 #include "iceoryx/iceoryx_posh/popo/publisher.hpp"
 #include "iceoryx/iceoryx_posh/popo/subscriber.hpp"
 #include "iceoryx/iceoryx_posh/runtime/posh_runtime.hpp"
+#include "iceoryx/iceoryx_posh/capro/service_description.hpp"
 
 #include <string>
 #include <functional>
@@ -13,8 +13,7 @@
 #include <thread>
 #include <iostream>
 
-namespace en_lrpc {
-
+namespace iox_lrpc {
 template<typename Request, typename Response>
 class client
 {
@@ -45,14 +44,20 @@ public:
         std::string client_id = std::to_string(m_client_id);
 
         // Create publisher for sending requests
-        m_publisher = std::make_shared<publisher_type>(
-            iox::popo::PublisherOptions{}.withServiceDescription({request_name.c_str(), response_name.c_str(), request_name.c_str()})
+        auto publisher_service_description = iox::capro::ServiceDescription(
+            iox::capro::IdString_t(iox::TruncateToCapacity, request_name.c_str()),
+            iox::capro::IdString_t(iox::TruncateToCapacity, response_name.c_str()),
+            iox::capro::IdString_t(iox::TruncateToCapacity, request_name.c_str())
         );
+        m_publisher = std::make_shared<publisher_type>(publisher_service_description);
 
         // Create subscriber for receiving responses
-        m_subscriber = std::make_shared<subscriber_type>(
-            iox::popo::SubscriberOptions{}.withServiceDescription({request_name.c_str(), response_name.c_str(), client_id.c_str()})
+        auto subscriber_service_description = iox::capro::ServiceDescription(
+            iox::capro::IdString_t(iox::TruncateToCapacity, request_name.c_str()),
+            iox::capro::IdString_t(iox::TruncateToCapacity, response_name.c_str()),
+            iox::capro::IdString_t(iox::TruncateToCapacity, client_id.c_str())
         );
+        m_subscriber = std::make_shared<subscriber_type>(subscriber_service_description);
     }
 
     bool send(const Request &request, std::function<void(const Response &)> callback = nullptr, uint64_t timeout_ms = 1000)
@@ -81,6 +86,7 @@ public:
 
         // If no callback provided, just return success
         if (!callback) {
+            std::cerr << "No callback provided, returning success" << std::endl;
             return true;
         }
 
@@ -94,14 +100,11 @@ public:
             }
             
             // Sleep a bit to avoid busy waiting
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            std::this_thread::sleep_for(std::chrono::microseconds(100));
         }
 
         std::cerr << "Timeout waiting for response" << std::endl;
         return false;
     }
 };
-
-} // namespace en_lrpc
-
-#endif // EN_LRPC_CLIENT_H
+} // namespace iox_lrpc

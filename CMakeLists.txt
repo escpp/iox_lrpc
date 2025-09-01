@@ -15,11 +15,17 @@ include(IceoryxPlatformSettings)
 # Add include directory
 include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/include
-    /usr/local/includle/iceoryx/
+    /usr/local/include/iceoryx/
 )
 
 iox_add_executable(
-    TARGET  lrpc_test
-    FILES   test/test_lrpc.cpp
+    TARGET  test_lrpc_client
+    FILES   test/test_lrpc_client.cc
+    LIBS    iceoryx_posh::iceoryx_posh
+)
+
+iox_add_executable(
+    TARGET  test_lrpc_server
+    FILES   test/test_lrpc_server.cc
     LIBS    iceoryx_posh::iceoryx_posh
 )
